@@ -2,16 +2,24 @@ import fetch from 'node-fetch';
 import getPixels from "get-pixels";
 import WebSocket from 'ws';
 import ndarray from "ndarray";
+import fs from 'fs';
 
 const args = process.argv.slice(2);
 
-if (args.length != 1)
+if (args.length !== 1 && !process.env.REDDIT_SESSION)
 {
-    console.error("Missing access token.")
+    log("Missing reddit_session cookie.");
     process.exit(1);
 }
+let redditSessionCookies = (process.env.REDDIT_SESSION || args[0]).split(';');
+if (redditSessionCookies.length > 4)
+{
+    log("Having more than 4 reddit accounts per IP address is not advised!");
+}
+let hasTokens = false;
+let accessTokens;
+let defaultAccessToken;
 
-let accessToken = args[0]
 let hasOrders   = false;
 let placeOrders = [];
 
@@ -53,16 +61,58 @@ const COLOR_MAPPINGS = [
 
 (async function ()
 {
+    await refreshTokens();
     setInterval(updateOrders, 5 * 60 * 1000); // Update orders every 5 minutes.
     await updateOrders();
-    await attemptPlace();
+    await startPlacement();
 })();
 
-async function attemptPlace()
+async function refreshTokens()
 {
+    let tokens = [];
+    for (const cookie of redditSessionCookies)
+    {
+        let response = await fetch("https://www.reddit.com/r/place/", {
+            'headers': {
+                'cookie': `reddit_session=${cookie}`
+            }
+        });
+        tokens.push((await response.text()).split('\"accessToken\":\"')[1].split('"')[0]);
+    }
+
+    log(`Refreshed tokens: ${tokens}`)
+    accessTokens       = tokens;
+    defaultAccessToken = tokens[0]
+    hasTokens          = true;
+
+    // Refresh the tokens every 30 minutes.
+    setInterval(refreshTokens, 30 * 60 * 1000);
+}
+
+function startPlacement()
+{
+    if (!hasTokens)
+    {
+        setTimeout(startPlacement, 1000);
+        return;
+    }
+
+    // Try to stagger pixel placement
+    let interval = 300 / accessTokens.length;
+    let delay    = 0;
+    for (let accessToken of accessTokens)
+    {
+        setTimeout(() => attemptPlace(accessToken), delay * 1000);
+        delay += interval;
+    }
+}
+
+async function attemptPlace(accessToken = defaultAccessToken)
+{
+    let retry = () => attemptPlace(accessToken);
     if (!hasOrders)
     {
-        setTimeout(attemptPlace, 2000);
+        setTimeout(retry, 2000);
         return;
     }
     let currentMap;
@@ -73,12 +123,10 @@ async function attemptPlace()
     }
     catch (e)
     {
-        console.warn('Failed to retrieve canvas: ', e);
-        setTimeout(attemptPlace, 15000);
+        log(`Failed to retrieve canvas: ${e}`);
+        setTimeout(retry, 15000);
         return;
     }
-
-    let rgbaCanvas = currentMap.data;
 
     for (const order of placeOrders)
     {
@@ -91,7 +139,7 @@ async function attemptPlace()
         if (typeof currentColor === 'undefined')
         {
             const hex = rgbToHex(rgbaAtLocation[0], rgbaAtLocation[1], rgbaAtLocation[2]);
-            console.warn(`Pixel at ${x} ${y} has undefined color (${hex}). Replacing with ${color.name} at ${new Date().toLocaleTimeString()}.`);
+            log(`Pixel at ${x} ${y} has undefined color (${hex}). Replacing with ${color.name}.`);
         }
         else if (currentColor.id === color.id)
         {
@@ -99,10 +147,10 @@ async function attemptPlace()
         }
         else
         {
-            console.log(`Pixel at (${x},${y}) is ${currentColor.name} but needs to be ${color.name}. Replaced at ${new Date().toLocaleTimeString()}.`);
+            log(`Pixel at (${x},${y}) is ${currentColor.name} but needs to be ${color.name}.`);
         }
 
-        const res  = await place(x, y, color.id);
+        const res  = await place(x, y, color.id, accessToken);
         const data = await res.json();
         try
         {
@@ -112,55 +160,55 @@ async function attemptPlace()
                 const nextPixel     = error.extensions.nextAvailablePixelTs + 3000;
                 const nextPixelDate = new Date(nextPixel);
                 const delay         = nextPixelDate.getTime() - Date.now();
-                console.log(`Tried placing pixel too soon! Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`)
-                setTimeout(attemptPlace, delay);
+                log(`Tried placing pixel too soon! Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`)
+                setTimeout(retry, delay);
             }
             else
             {
                 const nextPixel     = data.data.act.data[0].data.nextAvailablePixelTimestamp + 3000;
                 const nextPixelDate = new Date(nextPixel);
                 const delay         = nextPixelDate.getTime() - Date.now();
-                console.log(`Successfully placed ${color.name} pixel on ${x}, ${y}. Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`)
-                setTimeout(attemptPlace, delay);
+                log(`Successfully placed ${color.name} pixel on ${x}, ${y}. Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`)
+                setTimeout(retry, delay);
             }
         }
         catch (e)
         {
-            console.warn('Error in response analysis', e);
-            setTimeout(attemptPlace, 10000);
+            log(`Error in response analysis ${e}`);
+            setTimeout(retry, 10000);
         }
 
         return;
     }
 
-    console.log('All the pixels are already in the right place!')
-    setTimeout(attemptPlace, 5000);
+    log('All the pixels are already in the right place!')
+    setTimeout(retry, 5000);
 }
 
 function updateOrders()
 {
-    console.debug('Loading new placement orders.');
+    log('Loading new placement orders.');
     fetch('https://cdn.scoresaber.com/downloads/placeOrders.json')
         .then(async (response) =>
         {
             if (!response.ok)
             {
-                return console.warn('Could not load new placement orders! (non-ok status code)');
+                return log('Could not load new placement orders! (non-ok status code)');
             }
             let data = await response.json();
 
             if (JSON.stringify(data) !== JSON.stringify(placeOrders))
             {
-                console.debug(`Loaded new placement orders. Total pixel count: ${data.length}.`);
+                log(`Loaded new placement orders. Total pixel count: ${data.length}.`);
             }
 
             placeOrders = data;
             hasOrders   = true;
         })
-        .catch((e) => console.warn('Could not load new placement orders!', e));
+        .catch((e) => log(`Could not load new placement orders! ${e}`));
 }
 
-function place(x, y, colorId)
+function place(x, y, colorId, accessToken = defaultAccessToken)
 {
     try
     {
@@ -194,11 +242,13 @@ function place(x, y, colorId)
     }
     catch (e)
     {
-        window.location.reload();
+        log('Failed to place pixel. Refreshing access tokens.');
+        // noinspection JSIgnoredPromiseFromCall
+        refreshTokens();
     }
 }
 
-async function getCurrentImageUrl()
+async function getCurrentImageUrl(accessToken = defaultAccessToken)
 {
     return new Promise((resolve, reject) =>
     {
@@ -273,11 +323,11 @@ function getMapFromUrl(url)
         {
             if (err)
             {
-                console.log("Bad image path")
+                log("Bad image path")
                 reject()
                 return
             }
-            console.log("got pixels", pixels.shape.slice())
+            log(`Received pixel array. [${pixels.shape.slice()}]`)
             resolve(pixels)
         })
     });
@@ -348,4 +398,11 @@ function getRgbaAtLocation(pixelMap, x, y)
         pixelMap.data[pos + 2],
         pixelMap.data[pos + 3],
     ]
+}
+
+function log(message)
+{
+    message = `[${new Date().toLocaleTimeString()}] ${message}`;
+    console.log(message);
+    fs.appendFile('log.txt', message + '\n', err => { if (err) throw err });
 }

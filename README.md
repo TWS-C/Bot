@@ -14,24 +14,15 @@
 
 ## Headless bot
 
-### Getting your access token
+### Getting your reddit_session cookie
+**NOTE: People have reported that this is annoying to do on chrome because texts get unselected. Therefore, we recommend that you use firefox.**
 1. Go to [r/place](https://www.reddit.com/r/place/)
-2. Open the browser console (F12 / Right click -> Inspect -> Click on console)
-3. Paste the following code and press enter:
-
-```js
-async function getAccessToken() {
-	const usingOldReddit = window.location.href.includes('new.reddit.com');
-	const url = usingOldReddit ? 'https://new.reddit.com/r/place/' : 'https://www.reddit.com/r/place/';
-	const response = await fetch(url);
-	const responseText = await response.text();
-
-	return responseText.split('\"accessToken\":\"')[1].split('"')[0];
-}
-
-await getAccessToken()
-```
-4. The text between the quotes (`"`) is your access token.
+2. Open dev tools and go to the network tab (F12 / Right click -> Inspect -> Click on network)
+3. Refresh the page
+4. Click on the first request to reddit.com/r/place (See image)
+      ![Screenshot_20220403_165251](https://user-images.githubusercontent.com/9784257/161433856-27ef7e7c-7f00-4b37-b274-4199ea919aa9.png)
+5. Go to the tab called `Cookies`
+6. Copy the value of the `reddit_session` cookie
 
 ### Installation instructions
 
@@ -43,5 +34,5 @@ await getAccessToken()
     - Mac: Really no idea. Sorry!
     - Linux: Not really necessary, right?
 5. Install the necessary dependencies with `npm i`
-6. Execute the bot with `node bot.js ACCESS_TOKEN_HERE`
+6. Execute the bot with `node bot.js SESSION_COOKIE_HERE`
 7. BONUS: You can do the last two steps as many times as you want for additional accounts. Just make sure you use different accounts otherwise it doesn't make much sense.
