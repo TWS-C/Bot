@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ScoreSaberBot (Based on PlaceNL Bot)
 // @namespace    https://github.com/PlaceNL/Bot
-// @version      8
+// @version      9
 // @description  Bot to defend ScoreSaber
 // @author       NoahvdAa with modifications by TheWhiteShadow
 // @match        https://www.reddit.com/r/place/*
@@ -16,10 +16,11 @@
 // @grant        GM.xmlHttpRequest
 // ==/UserScript==
 
-let hasOrders   = false;
-let placeOrders = [];
+let hasOrders     = false;
+let placeOrders   = [];
 let accessToken;
-let canvas      = document.createElement('canvas');
+let canvas        = document.createElement('canvas');
+let canvasUpdates = [];
 
 /**
  * @typedef {Object} Color
@@ -185,17 +186,13 @@ async function attemptPlace()
 async function getWrongPixels()
 {
     let wrongPixels = [];
-    console.debug('Fetching current canvas.');
-    let canvasUrl = await getCurrentImageUrl();
-    let ctx       = await getCanvasFromUrl(canvasUrl);
-    console.debug('Fetched current canvas from ' + canvasUrl);
 
     for (const order of placeOrders)
     {
         let x            = order[0];
         let y            = order[1];
         let color        = getColor(order[2]);
-        let currentRgba  = ctx.getImageData(x, y, 1, 1).data;
+        let currentRgba  = await getRgbaAtLocation(x, y);
         let currentColor = getClosestColor(currentRgba[0], currentRgba[1], currentRgba[2]);
 
         if (typeof currentColor === 'undefined')
@@ -306,9 +303,10 @@ async function getAccessToken()
 }
 
 /**
+ * @param {number} id
  * @returns {Promise<string>}
  */
-async function getCurrentImageUrl()
+async function getCurrentImageUrl(id = 0)
 {
     return new Promise((resolve, reject) =>
     {
@@ -331,7 +329,7 @@ async function getCurrentImageUrl()
                             'channel': {
                                 'teamOwner': 'AFD2022',
                                 'category':  'CANVAS',
-                                'tag':       '0'
+                                'tag':       id.toString()
                             }
                         }
                     },
@@ -363,9 +361,11 @@ async function getCurrentImageUrl()
 
 /**
  * @param {string} url
+ * @param {number} x
+ * @param {number} y
  * @returns {Promise<CanvasRenderingContext2D>}
  */
-function getCanvasFromUrl(url)
+function getCanvasFromUrl(url, x = 0, y = 0)
 {
     return new Promise((resolve, reject) =>
     {
@@ -399,7 +399,8 @@ function getCanvasFromUrl(url)
                                 img.onerror = reject;
                                 img.onload  = () =>
                                 {
-                                    ctx.drawImage(img, 0, 0);
+                                    ctx.drawImage(img, x, y);
+                                    canvasUpdates[(x >= 1000 ? 1 : 0) + (y >= 1000 ? 2 : 0)] = new Date().getTime();
                                     resolve(ctx);
                                 };
                                 img.src     = base64;
@@ -456,4 +457,36 @@ function getClosestColor(r, g, b)
 function getColor(id)
 {
     return COLOR_MAPPINGS[COLOR_MAPPINGS.findIndex((color) => color.id === id)] || null;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @return {Promise<Uint8ClampedArray>}
+ */
+async function getRgbaAtLocation(x, y)
+{
+    let ctx;
+    let mapId = (x >= 1000 ? 1 : 0) + (y >= 1000 ? 2 : 0);
+    if (typeof canvasUpdates[mapId] === 'undefined' || canvasUpdates[mapId] + 5000 < new Date().getTime())
+    {
+        try
+        {
+            console.debug(`Fetching current canvas for section ${mapId}.`);
+            let canvasUrl = await getCurrentImageUrl(mapId);
+            ctx           = await getCanvasFromUrl(canvasUrl, x >= 1000 ? 1000 : 0, y >= 1000 ? 1000 : 0);
+            console.debug('Fetched current canvas from ' + canvasUrl);
+        }
+        catch (e)
+        {
+            console.warn('Failed to fetch current canvas.');
+            throw e;
+        }
+    }
+    else
+    {
+        ctx = canvas.getContext('2d');
+    }
+
+    return ctx.getImageData(x, y, 1, 1).data;
 }

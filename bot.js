@@ -24,6 +24,9 @@ let hasOrders   = false;
 /** @type {[x: number, y: number, colorId: number][]} */
 let placeOrders = [];
 
+/** @type {PixelMap[]} */
+let pixelData = [];
+
 /**
  * @typedef {Object} Color
  * @property {number} id
@@ -128,7 +131,7 @@ async function attemptPlace(accessToken = defaultAccessToken)
     let wrongPixels;
     try
     {
-        wrongPixels = await getWrongPixels();
+        wrongPixels = await getWrongPixels(accessToken);
     }
     catch (e)
     {
@@ -184,20 +187,19 @@ async function attemptPlace(accessToken = defaultAccessToken)
 }
 
 /**
+ * @param {string} accessToken
  * @return {Promise<{x: number, y: number, wrong: Color, correct: Color}[]>}
  */
-async function getWrongPixels()
+async function getWrongPixels(accessToken)
 {
     let wrongPixels = [];
-    let canvasUrl   = await getCurrentImageUrl();
-    let currentMap  = await getMapFromUrl(canvasUrl);
 
     for (const order of placeOrders)
     {
         let x            = order[0];
         let y            = order[1];
         let color        = getColor(order[2]);
-        let currentRgba  = getRgbaAtLocation(currentMap, x, y);
+        let currentRgba  = await getRgbaAtLocation(accessToken, x, y);
         let currentColor = getClosestColor(currentRgba[0], currentRgba[1], currentRgba[2]);
 
         if (typeof currentColor === 'undefined')
@@ -287,7 +289,12 @@ function place(x, y, colorId, accessToken = defaultAccessToken)
     }
 }
 
-async function getCurrentImageUrl(accessToken = defaultAccessToken)
+/**
+ * @param {string} accessToken
+ * @param {number} id
+ * @return {Promise<string>}
+ */
+async function getCurrentImageUrl(accessToken = defaultAccessToken, id = 0)
 {
     return new Promise((resolve, reject) =>
     {
@@ -316,7 +323,7 @@ async function getCurrentImageUrl(accessToken = defaultAccessToken)
                             'channel': {
                                 'teamOwner': 'AFD2022',
                                 'category':  'CANVAS',
-                                'tag':       '0'
+                                'tag':       id.toString()
                             }
                         }
                     },
@@ -348,7 +355,7 @@ async function getCurrentImageUrl(accessToken = defaultAccessToken)
 }
 
 /**
- * @typedef {{data: Uint8Array, shape: array, stride: array, offset: number}} PixelMap
+ * @typedef {{data: Uint8Array, shape: array, stride: array, offset: number, timestamp: number}} PixelMap
  */
 /**
  * @param url
@@ -362,11 +369,10 @@ function getMapFromUrl(url)
         {
             if (err)
             {
-                log("Bad image path")
                 reject()
                 return
             }
-            log(`Received pixel array. [${pixels.shape.slice()}]`)
+            pixels.timestamp = new Date().getTime();
             resolve(pixels)
         })
     });
@@ -423,19 +429,38 @@ function getColor(id)
 }
 
 /**
- * @param {PixelMap} pixelMap
+ * @param {string} accessToken
  * @param {number} x
  * @param {number} y
- * @returns {[r: number, g: number, b: number, a: number]}
+ * @return {Promise<[r: number, g: number, b: number, a: number]>}
  */
-function getRgbaAtLocation(pixelMap, x, y)
+async function getRgbaAtLocation(accessToken, x, y)
 {
-    let pos = (x + y * pixelMap.shape[0]) * pixelMap.shape[2];
+    let mapId = (x >= 1000 ? 1 : 0) + (y >= 1000 ? 2 : 0);
+    if (typeof pixelData[mapId] === 'undefined' || pixelData[mapId].timestamp + 5000 < new Date().getTime())
+    {
+        try
+        {
+            log(`Fetching current canvas for section ${mapId}.`);
+            let canvasUrl    = await getCurrentImageUrl(accessToken, mapId);
+            pixelData[mapId] = await getMapFromUrl(canvasUrl);
+            log(`Fetched current canvas from ${canvasUrl}`);
+        }
+        catch (e)
+        {
+            log('Failed to fetch current canvas.');
+            throw e;
+        }
+    }
+    x = x % 1000;
+    y = y % 1000;
+
+    let pos = (x + y * pixelData[mapId].shape[0]) * pixelData[mapId].shape[2];
     return [
-        pixelMap.data[pos],
-        pixelMap.data[pos + 1],
-        pixelMap.data[pos + 2],
-        pixelMap.data[pos + 3],
+        pixelData[mapId].data[pos],
+        pixelData[mapId].data[pos + 1],
+        pixelData[mapId].data[pos + 2],
+        pixelData[mapId].data[pos + 3],
     ]
 }
 
