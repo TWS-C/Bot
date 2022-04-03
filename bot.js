@@ -21,6 +21,7 @@ let accessTokens;
 let defaultAccessToken;
 
 let hasOrders   = false;
+/** @type {[x: number, y: number, colorId: number][]} */
 let placeOrders = [];
 
 /**
@@ -115,61 +116,50 @@ async function attemptPlace(accessToken = defaultAccessToken)
         setTimeout(retry, 2000);
         return;
     }
-    let currentMap;
+
+    let wrongPixels;
     try
     {
-        const canvasUrl = await getCurrentImageUrl();
-        currentMap      = await getMapFromUrl(canvasUrl);
+        wrongPixels = await getWrongPixels();
     }
     catch (e)
     {
-        log(`Failed to retrieve canvas: ${e}`);
+        log(`Failed to get array of wrong pixels: ${e}`);
         setTimeout(retry, 15000);
         return;
     }
 
-    for (const order of placeOrders)
+    if (wrongPixels.length > 0)
     {
-        let x              = order[0];
-        let y              = order[1];
-        let color          = getColor(order[2]);
-        let rgbaAtLocation = getRgbaAtLocation(currentMap, x, y);
-        let currentColor   = getClosestColor(rgbaAtLocation[0], rgbaAtLocation[1], rgbaAtLocation[2]);
+        // Only has a 1/4 base chance of placing pixel to avoid multiple bots trying to place the same pixel and wasting time because of it.
+        // Chance of placing pixel is increased when multiple pixels are wrong.
+        if (Math.random() >= 1 / (3 + wrongPixels.length / wrongPixels.length))
+        {
+            log(`Found ${wrongPixels.length} wrong pixel${wrongPixels.length > 1 ? 's' : ''} but skipping placement to avoid collisions.`);
+            setTimeout(retry, 5000);
+            return;
+        }
+        // Pick a random wrong pixel to replace to further avoid bot collisions.
+        let wrongPixel = wrongPixels[Math.floor(Math.random() * wrongPixels.length)];
+        let x     = wrongPixel.x;
+        let y     = wrongPixel.y;
+        let color = wrongPixel.correct;
 
-        if (typeof currentColor === 'undefined')
-        {
-            const hex = rgbToHex(rgbaAtLocation[0], rgbaAtLocation[1], rgbaAtLocation[2]);
-            log(`Pixel at ${x} ${y} has undefined color (${hex}). Replacing with ${color.name}.`);
-        }
-        else if (currentColor.id === color.id)
-        {
-            continue;
-        }
-        else
-        {
-            log(`Pixel at (${x},${y}) is ${currentColor.name} but needs to be ${color.name}.`);
-        }
-
-        const res  = await place(x, y, color.id, accessToken);
-        const data = await res.json();
+        let data = await (await place(x, y, color.id, accessToken)).json();
         try
         {
             if (data.errors)
             {
-                const error         = data.errors[0];
-                const nextPixel     = error.extensions.nextAvailablePixelTs + 3000;
-                const nextPixelDate = new Date(nextPixel);
-                const delay         = nextPixelDate.getTime() - Date.now();
-                log(`Tried placing pixel too soon! Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`)
-                setTimeout(retry, delay);
+                let error         = data.errors[0];
+                let nextPixelDate = new Date(error.extensions.nextAvailablePixelTs + 3000);
+                log(`Tried placing pixel too soon! Next pixel can be placed at ${nextPixelDate.toLocaleTimeString()}.`)
+                setTimeout(retry, nextPixelDate.getTime() - Date.now());
             }
             else
             {
-                const nextPixel     = data.data.act.data[0].data.nextAvailablePixelTimestamp + 3000;
-                const nextPixelDate = new Date(nextPixel);
-                const delay         = nextPixelDate.getTime() - Date.now();
-                log(`Successfully placed ${color.name} pixel on ${x}, ${y}. Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`)
-                setTimeout(retry, delay);
+                let nextPixelDate = new Date(data.data.act.data[0].data.nextAvailablePixelTimestamp + 3000);
+                log(`Successfully placed ${color.name} pixel on ${x}, ${y}. Next pixel can be placed at ${nextPixelDate.toLocaleTimeString()}.`)
+                setTimeout(retry, nextPixelDate.getTime() - Date.now());
             }
         }
         catch (e)
@@ -183,6 +173,47 @@ async function attemptPlace(accessToken = defaultAccessToken)
 
     log('All the pixels are already in the right place!')
     setTimeout(retry, 5000);
+}
+
+/**
+ * @return {Promise<{x: number, y: number, wrong: Color, correct: Color}[]>}
+ */
+async function getWrongPixels()
+{
+    let wrongPixels = [];
+    let canvasUrl   = await getCurrentImageUrl();
+    let currentMap  = await getMapFromUrl(canvasUrl);
+
+    for (const order of placeOrders)
+    {
+        let x            = order[0];
+        let y            = order[1];
+        let color        = getColor(order[2]);
+        let currentRgba  = getRgbaAtLocation(currentMap, x, y);
+        let currentColor = getClosestColor(currentRgba[0], currentRgba[1], currentRgba[2]);
+
+        if (typeof currentColor === 'undefined')
+        {
+            let hex = rgbToHex(currentRgba[0], currentRgba[1], currentRgba[2]);
+            log(`Found wrong pixel at ${x} ${y} with undefined color (${hex}) but needs to be ${color.name}.`);
+        }
+        else if (currentColor.id === color.id)
+        {
+            continue;
+        }
+        else
+        {
+            log(`Found wrong pixel at (${x},${y}) with ${currentColor.name} color but needs to be ${color.name}.`);
+        }
+        wrongPixels.push({
+            'x':       x,
+            'y':       y,
+            'wrong':   currentColor,
+            'correct': color,
+        });
+    }
+
+    return wrongPixels;
 }
 
 function updateOrders()

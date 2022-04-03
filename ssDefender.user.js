@@ -1,16 +1,16 @@
 // ==UserScript==
 // @name         ScoreSaberBot (Based on PlaceNL Bot)
 // @namespace    https://github.com/PlaceNL/Bot
-// @version      7
+// @version      8
 // @description  Bot to defend ScoreSaber
 // @author       NoahvdAa with modifications by TheWhiteShadow
 // @match        https://www.reddit.com/r/place/*
 // @match        https://new.reddit.com/r/place/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=reddit.com
-// @require	     https://cdn.jsdelivr.net/npm/toastify-js
+// @require      https://cdn.jsdelivr.net/npm/toastify-js
 // @resource     TOASTIFY_CSS https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css
-// @updateURL    https://cdn.scoresaber.com/downloads/ssDefender.user.js
-// @downloadURL  https://cdn.scoresaber.com/downloads/ssDefender.user.js
+// @updateURL    https://github.com/TWS-C/Bot/raw/master/ssDefender.user.js
+// @downloadURL  https://github.com/TWS-C/Bot/raw/master/ssDefender.user.js
 // @grant        GM_getResourceText
 // @grant        GM_addStyle
 // @grant        GM.xmlHttpRequest
@@ -86,76 +86,66 @@ async function attemptPlace()
         setTimeout(attemptPlace, 2000); // try again in 2sec.
         return;
     }
-    let ctx;
+    let wrongPixels;
     try
     {
-        console.debug('Fetching current canvas.');
-        let canvasUrl = await getCurrentImageUrl();
-        ctx           = await getCanvasFromUrl(canvasUrl);
-        console.debug('Fetched current canvas from ' + canvasUrl);
+        wrongPixels = await getWrongPixels();
     }
     catch (e)
     {
-        console.warn('Failed to retrieve canvas: ', e);
+        console.warn('Failed to get array of wrong pixels: ', e);
         Toastify({
-            text:     'Failed to retrieve canvas. Retrying in 15 sec...',
+            text:     'Failed to get array of wrong pixels. Retrying in 15 sec...',
             duration: 10000,
         }).showToast();
         setTimeout(attemptPlace, 15000);
         return;
     }
 
-    for (const order of placeOrders)
+    if (wrongPixels.length > 0)
     {
-        let x              = order[0];
-        let y              = order[1];
-        let color          = getColor(order[2]);
-        let rgbaAtLocation = ctx.getImageData(x, y, 1, 1).data;
-        let currentColor   = getClosestColor(rgbaAtLocation[0], rgbaAtLocation[1], rgbaAtLocation[2]);
+        // Only has a 1/4 base chance of placing pixel to avoid multiple bots trying to place the same pixel and wasting time because of it.
+        // Chance of placing pixel is increased when multiple pixels are wrong.
+        if (Math.random() >= 1 / (3 + wrongPixels.length / wrongPixels.length))
+        {
+            console.log(`Found ${wrongPixels.length} wrong pixel${wrongPixels.length > 1 ? 's' : ''} but skipping placement to avoid collisions.`);
+            Toastify({
+                text:     `Found ${wrongPixels.length} wrong pixel${wrongPixels.length > 1 ? 's' : ''} but skipping placement to avoid collisions.`,
+                duration: 10000,
+            }).showToast();
+            setTimeout(attemptPlace, 5000);
+            return;
+        }
+        // Pick a random wrong pixel to replace to further avoid bot collisions.
+        let wrongPixel = wrongPixels[Math.floor(Math.random() * wrongPixels.length)];
+        let x     = wrongPixel.x;
+        let y     = wrongPixel.y;
+        let color = wrongPixel.correct;
 
-        if (typeof currentColor === 'undefined')
-        {
-            const hex = rgbToHex(rgbaAtLocation[0], rgbaAtLocation[1], rgbaAtLocation[2]);
-            console.warn(`Pixel at ${x} ${y} has undefined color (${hex}). Replacing with ${color.name} at ${new Date().toLocaleTimeString()}.`);
-        }
-        else if (currentColor.id === color.id)
-        {
-            continue;
-        }
-        else
-        {
-            console.log(`Pixel at (${x},${y}) is ${currentColor.name} but needs to be ${color.name}. Replaced at ${new Date().toLocaleTimeString()}.`);
-        }
+        console.log(`Trying to place ${color.name} pixel on (${x},${y})...`);
         Toastify({
             text:     `Trying to place ${color.name} pixel on ${x}, ${y}...`,
             duration: 10000,
         }).showToast();
-
-        let res  = await place(x, y, color.id);
-        let data = await res.json();
+        let data = await (await place(x, y, color.id)).json();
         try
         {
             if (data.errors)
             {
-                console.debug(data);
-                let error         = data.errors[0];
-                let nextPixel     = error.extensions.nextAvailablePixelTs + 3000;
-                let nextPixelDate = new Date(nextPixel);
+                let nextPixelDate = new Date(data.errors[0].extensions.nextAvailablePixelTs + 3000);
                 let delay         = nextPixelDate.getTime() - Date.now();
                 Toastify({
-                    text:     `Tried placing pixel too soon! Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`,
+                    text:     `Tried placing pixel too soon! Next pixel can be placed at ${nextPixelDate.toLocaleTimeString()}.`,
                     duration: delay
                 }).showToast();
                 setTimeout(attemptPlace, delay);
             }
             else
             {
-                console.debug(data);
-                let nextPixel     = data.data.act.data[0].data.nextAvailablePixelTimestamp + 3000;
-                let nextPixelDate = new Date(nextPixel);
+                let nextPixelDate = new Date(data.data.act.data[0].data.nextAvailablePixelTimestamp + 3000);
                 let delay         = nextPixelDate.getTime() - Date.now();
                 Toastify({
-                    text:     `Successfully placed ${color.name} pixel on ${x}, ${y}. Next pixel is placed at ${nextPixelDate.toLocaleTimeString()}.`,
+                    text:     `Successfully placed ${color.name} pixel on ${x}, ${y}. Next pixel can be placed at ${nextPixelDate.toLocaleTimeString()}.`,
                     duration: delay
                 }).showToast();
                 setTimeout(attemptPlace, delay);
@@ -179,6 +169,49 @@ async function attemptPlace()
         duration: 10000,
     }).showToast();
     setTimeout(attemptPlace, 5000);
+}
+
+/**
+ * @return {Promise<{x: number, y: number, wrong: Color, correct: Color}[]>}
+ */
+async function getWrongPixels()
+{
+    let wrongPixels = [];
+    console.debug('Fetching current canvas.');
+    let canvasUrl = await getCurrentImageUrl();
+    let ctx       = await getCanvasFromUrl(canvasUrl);
+    console.debug('Fetched current canvas from ' + canvasUrl);
+
+    for (const order of placeOrders)
+    {
+        let x            = order[0];
+        let y            = order[1];
+        let color        = getColor(order[2]);
+        let currentRgba  = ctx.getImageData(x, y, 1, 1).data;
+        let currentColor = getClosestColor(currentRgba[0], currentRgba[1], currentRgba[2]);
+
+        if (typeof currentColor === 'undefined')
+        {
+            let hex = rgbToHex(currentRgba[0], currentRgba[1], currentRgba[2]);
+            console.warn(`Found wrong pixel at ${x} ${y} with undefined color (${hex}) but needs to be ${color.name}.`);
+        }
+        else if (currentColor.id === color.id)
+        {
+            continue;
+        }
+        else
+        {
+            console.debug(`Found wrong pixel at (${x},${y}) with ${currentColor.name} color but needs to be ${color.name}.`);
+        }
+        wrongPixels.push({
+            'x':       x,
+            'y':       y,
+            'wrong':   currentColor,
+            'correct': color,
+        });
+    }
+
+    return wrongPixels;
 }
 
 function updateOrders()
