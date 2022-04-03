@@ -341,7 +341,7 @@ function getColor(id)
  */
 function getRgbaAtLocation(pixelMap, x, y)
 {
-    let pos = (x + y * pixelMap.shape[0]) % pixelMap.shape[0] * pixelMap.shape[2];
+    let pos = (x + y * pixelMap.shape[0]) * pixelMap.shape[2];
     return [
         pixelMap.data[pos],
         pixelMap.data[pos + 1],
